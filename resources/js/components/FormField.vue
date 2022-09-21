@@ -1,13 +1,15 @@
 <template>
-  <DefaultField :field="field" :showHelpText="showHelpText" :errors="errors">
-    <template #field>
-      <div class="outl1ne-multiselect-field flex flex-col">
+  <default-field :field="field" :showHelpText="showHelpText" :errors="errors">    
+    <template slot="field">
+
+      <div class="multiselect-field flex flex-col">
         <!-- Multi select field -->
         <multiselect
           v-if="!reorderMode"
           @input="handleChange"
           @open="handleOpen"
           @search-change="tryToFetchOptions"
+          @select="handleSelect"
           track-by="value"
           label="label"
           :group-label="isOptionGroups ? 'label' : void 0"
@@ -24,7 +26,6 @@
           :multiple="isMultiselect"
           :max="max || field.max || null"
           :optionsLimit="field.optionsLimit || 1000"
-          :limit="field.limit"
           :limitText="count => __('novaMultiselect.limitText', { count: String(count || '') })"
           selectLabel=""
           :loading="isLoading"
@@ -33,49 +34,46 @@
           deselectLabel=""
           deselectGroupLabel=""
           :clearOnSelect="field.clearOnSelect || false"
-          :taggable="field.taggable || false"
-          @tag="addTag"
         >
-          <template #maxElements>
+          <template slot="maxElements">
             {{ __('novaMultiselect.maxElements', { max: String(field.max || '') }) }}
           </template>
 
-          <template #noResult>
+          <template slot="noResult">
             {{ __('novaMultiselect.noResult') }}
           </template>
 
-          <template #noOptions>
+          <template slot="noOptions">
             {{ field.apiUrl ? __('novaMultiSelect.startTypingForOptions') : __('novaMultiselect.noOptions') }}
           </template>
 
-          <template #clear>
+          <template slot="clear">
             <div
               class="multiselect__clear"
               v-if="field.nullable && (isMultiselect ? value.length : value)"
               @mousedown.prevent.stop="value = isMultiselect ? [] : null"
-            />
+            ></div>
           </template>
-
-          <template #singleLabel>
-            <span>{{ value ? value.label : '' }}</span>
+          <template slot="singleLabel" slot-scope="props">
+            <nitsnets-multiselect-option :field="field" :value="props.option"/>
           </template>
-
-          <template #tag="{ option, remove }">
-            <form-multiselect-field-tag :option="option" :remove="remove" />
+          <template slot="option" slot-scope="props">
+            <nitsnets-multiselect-option :field="field" :value="props.option"/>
+          </template>
+          <template slot="search" slot-scope="props">
+            <nitsnets-multiselect-option :field="field" :value="props.option"/>
           </template>
         </multiselect>
 
         <!-- Reorder mode field -->
-        <div v-if="reorderMode" class="form-input-bordered py-1 px-2 rounded-lg">
-          <ul class="flex flex-col pl-0" style="list-style: none; margin-top: 5px">
-            <VueDraggable v-model="value" tag="transition-group">
-              <template #item="{ element }">
-                <li class="reorder__tag text-sm mb-1 px-2 py-1 text-white">
-                  {{ element.label }}
-                </li>
-              </template>
-            </VueDraggable>
-          </ul>
+        <div v-if="reorderMode && !field.listed" class="form-input-bordered py-1">
+          <vue-draggable tag="ul" v-model="value" class="flex flex-col pl-0" style="list-style: none; margin-top: 5px">
+            <transition-group>
+              <li v-for="(s, i) in selected" :key="i + 0" class="reorder__tag text-sm mb-1 px-2 py-1 text-white">
+                {{ s.label }}
+              </li>
+            </transition-group>
+          </vue-draggable>
         </div>
 
         <div
@@ -85,15 +83,83 @@
         >
           {{ __(reorderMode ? 'novaMultiselect.doneReordering' : 'novaMultiselect.reorder') }}
         </div>
+
+        <!-- item's list -->
+        <div v-if="listed && !reorderMode" class="py-2">
+          <div v-for="(s, i) in listable" class="block form-input-bordered mb-2 p-3 pb-2 relative">
+            <div v-if="s.label.title">
+              <div class="inline-block w-16 pr-2" v-if="s.label.img">
+                <img v-viewer class="w-auto" :src="s.label.img" :alt="s.label.code">
+              </div>
+              <div class="inline-block w-10/12 align-top">
+                <span class="whitespace-no-wrap text-gray-900 text-sm font-medium">{{ s.label.title }}</span><br>
+                <span class="whitespace-no-wrap mt-1 text-gray-500 text-xs">{{ s.label.url }}</span><br>
+                <span class="whitespace-no-wrap mt-1 text-gray-500 text-sm">{{ s.label.code }}</span>
+              </div>
+              <div class="absolute top-3 right-3">
+                <i class="cursor-pointer" v-on:click="removeList(i)">
+                  <svg class="w-4" xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                </i>
+              </div>
+            </div>
+            <span v-else>
+              {{ s.label }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Reorder mode field -->
+        <div v-if="reorderMode && listed" class="form-input-bordered py-1">
+          <vue-draggable tag="ul" v-model="listable" class="flex flex-col pl-0" style="list-style: none; margin-top: 5px">
+            <transition-group>
+              <li v-for="(s, i) in listable" :key="i + 0" class="reorder__tag text-sm mb-1 px-2 py-1 pb-2 text-white">
+
+                  <div v-if="s.label.title">
+                    <div class="inline-block w-16 pr-2" v-if="s.label.img">
+                      <img v-viewer class="w-auto"  :src="s.label.img" :alt="s.label.code">
+                    </div>
+                    <div class="inline-block w-10/12 align-top">
+                      <span class="whitespace-no-wrap text-gray-900 text-sm font-medium">{{ s.label.title }}</span><br>
+                      <span class="whitespace-no-wrap mt-1 text-gray-500 text-xs">{{ s.label.url }}</span><br>
+                      <span class="whitespace-no-wrap mt-1 text-gray-500 text-sm">{{ s.label.code }}</span>
+                    </div>
+                  </div>
+                  <span v-else>
+                  {{ s.label }}
+                  </span>
+              </li>
+            </transition-group>
+          </vue-draggable>
+        </div>
+
+        
+        <!-- csv import -->
+        <form v-if="field.activeImport" enctype="multipart/form-data" class="import-container w-1/2">
+          <input 
+            :id="field.name"
+            type="file" 
+            class="upload-btn p-2"
+            :class="errorClasses"
+            :placeholder="this.field.placeholder"
+            ref="file" 
+            @change="handleFile"
+          />
+          <p v-for="line in importLog" class="text-90 text-xs">
+            {{ line }}
+          </p>
+        </form>
+
       </div>
     </template>
-  </DefaultField>
+  </default-field>
 </template>
 
 <script>
 import { FormField, HandlesValidationErrors } from 'laravel-nova';
 import HandlesFieldValue from '../mixins/HandlesFieldValue';
-import Multiselect from 'vue-multiselect/src/Multiselect';
+import Multiselect from 'vue-multiselect';
 import VueDraggable from 'vuedraggable';
 import debounce from 'lodash/debounce';
 
@@ -112,15 +178,20 @@ export default {
     distinctValues: [],
     isLoading: false,
     isInitialized: false,
+    listable : [],
+    listed: false,
+    importLog: [],
+    file: '',
+    fileinput: '',
   }),
 
   mounted() {
     window.addEventListener('scroll', this.repositionDropdown);
 
-    if (this.field.optionsDependOn) {
+    if (this.field.dependsOn) {
       this.options = [];
 
-      Nova.$on(`multiselect-${this.safeDependsOnAttribute}-input`, values => {
+      Nova.$on(`nts-multiselect-${this.safeDependsOnAttribute}-input`, values => {
         values = Array.isArray(values) ? values : [values]; // Handle singleSelect
 
         // Clear options
@@ -130,11 +201,11 @@ export default {
         values.forEach(option => {
           if (!option) return;
 
-          Object.keys(this.field.optionsDependOnOptions[option.value] || {}).forEach(value => {
+          Object.keys(this.field.dependsOnOptions[option.value] || {}).forEach(value => {
             // Only add unique
             if (newOptions.find(o => o.value === value)) return;
 
-            let label = this.field.optionsDependOnOptions[option.value][value];
+            let label = this.field.dependsOnOptions[option.value][value];
             newOptions.push({ label, value });
           });
         });
@@ -152,10 +223,10 @@ export default {
         }
 
         // Calculate max values
-        const dependsOnMax = this.field.optionsDependOnMax;
+        const dependsOnMax = this.field.dependsOnMax;
         if (dependsOnMax) {
           const maxValues = values.map(option => {
-            return option && (this.field.optionsDependOnMax[option.value] || null);
+            return option && (this.field.dependsOnMax[option.value] || null);
           });
           this.max = Math.max(...maxValues) || null;
         }
@@ -164,20 +235,25 @@ export default {
 
     if (this.field.distinct) {
       // Handle distinct callback.
-      Nova.$on(`multiselect-${this.field.distinct}-distinct`, callback => {
+      Nova.$on(`nts-multiselect-${this.field.distinct}-distinct`, callback => {
         return callback(this.value);
       });
     }
 
+    if (this.field.listed) {
+      this.listed = true
+    }
+
+
     // Emit initial value
     this.$nextTick(() => {
-      Nova.$emit(`multiselect-${this.field.attribute}-input`, this.value);
+      Nova.$emit(`nts-multiselect-${this.field.attribute}-input`, this.value);
     });
   },
 
   destroyed() {
     window.removeEventListener('scroll', this.repositionDropdown);
-    if (this.field.distinct) Nova.$off(`multiselect-${this.field.distinct}-distinct`);
+    if (this.field.distinct) Nova.$off(`nts-multiselect-${this.field.distinct}-distinct`);
   },
 
   computed: {
@@ -192,27 +268,101 @@ export default {
     },
 
     safeDependsOnAttribute() {
-      if (this.field.optionsDependOnOutsideFlexible) {
-        return this.field.optionsDependOn;
-      }
-
       const flexibleKey = this.flexibleKey;
-      if (!flexibleKey) return this.field.optionsDependOn;
-      return `${flexibleKey}__${this.field.optionsDependOn}`;
+      if (!flexibleKey) return this.field.dependsOn;
+      return `${flexibleKey}__${this.field.dependsOn}`;
     },
   },
 
   methods: {
+    // start csv import
+    fetchServerData: async function(search) {
+      const { data } = await Nova.request().get(`${this.field.apiUrl}`, { params: { search } });
+        
+      // Response is not an array or an object
+      if (typeof data !== 'object') throw new Error('Server response was invalid.');
+
+      // Is array
+      if (Array.isArray(data)) {
+        this.importLog.push("Error al importar el código " + search);
+        return;
+      }
+
+      // Nova resource response
+      if (data) {
+        let dataKeys = Object.keys(data);
+        const label = data.[dataKeys[0]];
+        const value = dataKeys[0];
+        this.handleSelect({ value, label }, null);
+        this.importLog.push("Añadido cód. " + label.code + " (id " + value + ")");
+      }
+
+      return;
+    },
+
+    importContentToList: function(dataList) {
+      let importCalls = 0;
+      dataList.forEach( function(val, idx) {
+        if (idx == 0) {
+          this.importLog.push("Detectada cabecera " + val);
+        } else {
+          if (val.length) {
+            this.fetchServerData(val.trim());
+            importCalls++;
+          }
+        }
+      }, this);
+      this.importLog.push("Buscando " + importCalls + " productos");
+    },
+
+    handleFile: function (event) {
+      // debugger;
+      var file = this.$refs.file.files[0];
+
+      let promise = new Promise((resolve, reject) => {
+        var reader = new FileReader();
+        var vm = this;
+        reader.onload = e => {
+          resolve((vm.fileinput = reader.result));
+        };
+        reader.readAsText(file);
+      });
+
+      promise.then(
+          result => {
+            /* handle a successful result */
+            this.importContentToList(this.fileinput.split('\n'));
+          },
+          error => {
+            /* handle an error */
+            console.log(error);
+          }
+      );
+    },
+    // end csv import
+
     setInitialValue() {
       if (this.isMultiselect) {
         const valuesArray = this.getInitialFieldValuesArray();
-        this.value = valuesArray && valuesArray.length ? valuesArray.map(this.getValueFromOptions).filter(Boolean) : [];
+
+        if (this.field.listed) {
+          this.listable = valuesArray && valuesArray.length ? valuesArray.map(this.getValueFromOptions).filter(Boolean) : [];
+        } else {
+          this.value = valuesArray && valuesArray.length ? valuesArray.map(this.getValueFromOptions).filter(Boolean) : [];
+        }
       } else {
-        this.value = this.getValueFromOptions(this.field.value);
+        if (this.field.listed) {
+          this.listable = this.getValueFromOptions(this.field.value);
+        } else {
+          this.value = this.getValueFromOptions(this.field.value);
+        }
       }
     },
 
     fill(formData) {
+      if (this.listed) {
+        this.value = this.listable;
+      }
       if (this.isMultiselect) {
         if (this.value && this.value.length) {
           this.value.forEach((v, i) => {
@@ -227,18 +377,14 @@ export default {
     },
 
     handleChange(value) {
-      // For some reason, after upgrading to Vue 3, this callback
-      // Sometimes receives an InputEvent as an argument - my only
-      // fix is to filter out the InputEvent and only accept arrays
-      if (this.isMultiselect) {
-        if (!Array.isArray(value)) return;
+      if (this.listed) {
+        this.value = [];
       } else {
-        if (value && !value.value) return;
+        this.value = value;
       }
 
-      this.value = value;
       this.$nextTick(() => this.repositionDropdown());
-      Nova.$emit(`multiselect-${this.field.attribute}-input`, this.value);
+      Nova.$emit(`nts-multiselect-${this.field.attribute}-input`, this.value);
     },
 
     handleOpen() {
@@ -255,13 +401,11 @@ export default {
       this.distinctValues = [];
 
       // Fetch other select values in current distinct group
-      Nova.$emit(`multiselect-${this.field.distinct}-distinct`, values => {
-        if (!values) return;
-
+      Nova.$emit(`nts-multiselect-${this.field.distinct}-distinct`, values => {
         // Validate that current value is not disabled.
         if (values !== this.selected) {
           // Add already used values to distinctValues
-          if (Array.isArray(values)) this.distinctValues.push(...values.map(value => value.value));
+          if (this.isMultiselect) this.distinctValues.push(...values.map(value => value.value));
           else this.distinctValues.push(values.value);
         }
       });
@@ -318,21 +462,6 @@ export default {
       else handlePositioning();
     },
 
-    addTag(newTag) {
-      const tag = {
-        label: newTag,
-        value: newTag,
-      };
-
-      this.options.push(tag);
-
-      if (this.isMultiselect) {
-        this.value.push(tag);
-      } else {
-        this.value = tag;
-      }
-    },
-
     fetchOptions: debounce(async function (search) {
       const { data } = await Nova.request().get(`${this.field.apiUrl}`, { params: { search } });
 
@@ -351,8 +480,8 @@ export default {
         const newOptions = [];
 
         for (const resource of data.resources) {
-          const label = resource.display || resource.title || '-';
-          const value = resource.value || resource.id.value || null;
+          const label = resource.title;
+          const value = resource.id.value;
           newOptions.push({ value, label });
         }
 
@@ -380,262 +509,57 @@ export default {
         this.asyncOptions = [];
       }
     },
+    handleSelect(selected,id) {
+      if (this.isMultiselect) {
+        if (this.listable.findIndex(function (o) {
+          return o.value === selected.value
+        }) === -1) {
+          this.listable.push(selected)
+        }
+      } else {
+        this.listable = [];
+        this.listable.push(selected)
+      }
+    },
+    removeList(id) {
+      this.listable.splice(id, 1);
+    }
   },
 };
 </script>
 
 <style lang="scss">
-$white: #fff;
-$slate50: #f8fafc;
-$slate100: #f1f5f9;
-$slate200: #e2e8f0;
-$slate300: #cbd5e1;
-$slate400: #94a3b8;
-$slate500: #64748b;
-$slate600: #475569;
-$slate700: #334155;
-$slate800: #1e293b;
-$slate900: #0f172a;
+.import-container { 
+  position: absolute;
+  top: 0px;
+  left: 30rem;
+}
 
-$red400: #f87171;
-$red500: #ef4444;
 
-.outl1ne-multiselect-field {
-  .multiselect {
-    min-height: 36px;
-    border: none;
-    border-radius: 0;
-    background: none;
-  }
-
-  .multiselect__tags {
-    --tw-border-opacity: 1;
-    border-width: 1px;
-
-    border-color: $slate300;
-    background-color: $white;
-    color: $slate600;
-
-    padding: 6px 56px 0 6px;
-    min-height: 36px;
-
-    border-radius: 4px;
-    overflow: hidden;
-
-    .dark & {
-      border-color: $slate700;
-      background-color: $slate900;
-      color: $slate400;
-    }
-  }
-
-  .multiselect__input {
-    border: none;
-    border-color: rgba(var(--colors-gray-100), var(--tw-border-opacity));
-    background-color: $white;
-    color: rgba(var(--colors-gray-400));
-
-    font-size: 14px;
-    line-height: 14px;
-
-    padding-left: 8px;
-
-    .dark & {
-      background-color: $slate900;
-      color: $slate400;
-    }
-  }
-
-  .multiselect__tag {
-    background-color: rgba(var(--colors-primary-500));
-    color: $white;
-    font-weight: 600;
-
-    /* .dark & {
-      color: rgba(var(--colors-gray-900), var(--tw-text-opacity));
-    } */
-
-    padding: 4px 24px 4px 8px;
-    margin: 1px 8px 1px 0;
-
-    .multiselect__tag-icon {
-      &::after {
-        color: $white;
-      }
-
-      &:hover {
-        background: rgba(var(--colors-primary-500));
-
-        &::after {
-          color: $red500;
-        }
-      }
-    }
-  }
-
-  .multiselect > .multiselect__clear {
-    &::before,
-    &::after {
-      width: 2px;
-      background: rgba(var(--colors-gray-400));
-    }
-
-    &:hover {
-      &::before,
-      &::after {
-        background: rgba(var(--colors-red-400));
-      }
-    }
-  }
-
-  .multiselect__single {
-    background-color: $white;
-    color: $slate600;
-
-    font-size: 14px;
-    line-height: 18px;
-    font-weight: 700;
-    min-height: 18px;
-
-    padding-top: 2px;
-    padding-left: 8px;
-
-    color: $slate600;
-
-    .dark & {
-      color: rgba(var(--colors-gray-400));
-      background-color: $slate900;
-    }
-  }
-
-  .multiselect__spinner {
-    background-color: $white;
-    color: $slate600;
-
-    .dark & {
-      background-color: $slate900;
-      color: $slate400;
-    }
-
-    &:before,
-    &:after {
-      border-color: rgba(var(--colors-primary-500)) transparent transparent;
-    }
-  }
-
-  .multiselect__content-wrapper {
-    border-color: $slate300;
-    transition: none;
-
-    .dark & {
-      border-color: $slate700;
-    }
-
-    li > span.multiselect__option {
-      background-color: #fff;
-      color: $slate400;
-
-      min-height: 32px;
-      font-size: 14px;
-      line-height: 14px;
-
-      .dark & {
-        background-color: $slate900;
-      }
-    }
-
-    .multiselect__element {
-      background-color: $white;
-      color: $slate600;
-
-      .dark & {
-        background-color: $slate900;
-        color: $slate400;
-      }
-
-      .multiselect__option {
-        color: $slate600;
-
-        padding: 8px 12px;
-        min-height: 32px;
-        font-size: 14px;
-        line-height: 14px;
-
-        .dark & {
-          color: $slate400;
-        }
-
-        &.multiselect__option--selected {
-          color: rgba(var(--colors-primary-500));
-          background-color: $white;
-
-          .dark & {
-            background-color: $slate900;
-          }
-        }
-
-        &.multiselect__option--highlight {
-          background-color: rgba(var(--colors-primary-500));
-          color: $white;
-
-          &::after {
-            background-color: rgba(var(--colors-primary-500));
-            font-weight: 600;
-          }
-
-          &.multiselect__option--selected {
-            background-color: $red400;
-
-            .dark & {
-              background-color: $red400;
-            }
-          }
-        }
-      }
-    }
-  }
+.multiselect-field {
+  position: relative;
 
   .reorder__tag {
-    background-color: rgba(var(--colors-primary-500));
+    background: #41b883;
     border-radius: 5px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    transition: all 0.25s ease;
     margin-bottom: 5px;
-    font-weight: 600;
-    transition: all 0.2s ease-in-out;
 
     &:hover {
       cursor: pointer;
-      opacity: 0.8;
-    }
-  }
-
-  .multiselect__select {
-    height: 36px;
-  }
-
-  .multiselect__placeholder {
-    margin-bottom: 8px;
-    padding-top: 0px;
-    padding-left: 8px;
-    min-height: 16px;
-    line-height: 16px;
-    cursor: default;
-
-    color: #475569;
-
-    .dark & {
-      color: #64748b;
+      background: #3dab7a;
+      transition-duration: 0.05s;
     }
   }
 
   .multiselect__clear {
     position: absolute;
-    right: 36px;
-    top: 8px;
-    height: 20px;
-    width: 20px;
+    right: 41px;
+    height: 40px;
+    width: 40px;
     display: block;
     cursor: pointer;
     z-index: 2;
@@ -648,11 +572,8 @@ $red500: #ef4444;
       width: 3px;
       height: 16px;
       background: #aaa;
-      top: 0;
-      right: 0;
-      left: 0;
-      bottom: 0;
-      margin: auto;
+      top: 12px;
+      right: 4px;
     }
 
     &::before {

@@ -1,37 +1,52 @@
 <?php
 
-namespace Outl1ne\MultiselectField;
+namespace Nitsnets\MultiselectField;
 
 use Exception;
+use RuntimeException;
 use Laravel\Nova\Fields\Field;
 use Illuminate\Support\Collection;
-use Laravel\Nova\Contracts\RelatableField;
 use Laravel\Nova\Http\Requests\NovaRequest;
-use Outl1ne\MultiselectField\Traits\MultiselectBelongsToSupport;
 
-class Multiselect extends Field implements RelatableField
+class Multiselect extends Field
 {
-    use MultiselectBelongsToSupport;
-
-    public $component = 'multiselect-field';
+    public $component = 'nitsnets-multiselect-field';
 
     protected $pageResponseResolveCallback;
     protected $saveAsJSON = false;
 
     /**
+     * Enable import from CSV files.
+     *
+     * @param bool $activeImport
+     * @return \Nitsnets\MultiselectField\Multiselect
+     **/
+    public function activeImport($activeImport = true)
+    {
+        return $this->withMeta(['activeImport' => $activeImport]);
+    }
+
+
+    /**
      * Sets the options available for select.
      *
      * @param  array|callable
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
-    public function options($options = [])
+    public function options($options = [], $grouped = true)
     {
-        if (is_callable($options)) $options = call_user_func($options);
-        $options = collect($options ?: []);
+        if (is_callable($options)) {
+            $options = call_user_func($options);
+        }
+        $options = collect($options ?? []);
 
-        $isOptionGroup = $options->contains(function ($label, $value) {
-            return is_array($label);
-        });
+        if ($grouped) {
+            $isOptionGroup = $options->contains(function ($label, $value) {
+                return is_array($label);
+            });
+        } else {
+            $isOptionGroup = false;
+        }
 
         if ($isOptionGroup) {
             $_options = $options
@@ -48,7 +63,6 @@ class Multiselect extends Field implements RelatableField
             return $this->withMeta(['options' => $_options]);
         }
 
-
         return $this->withMeta([
             'options' => $options->map(function ($label, $value) {
                 return ['label' => $label, 'value' => $value];
@@ -56,82 +70,90 @@ class Multiselect extends Field implements RelatableField
         ]);
     }
 
-    public function api($path, $resourceClass)
+    /**
+     * @param      $path
+     * @param      $resourceClass
+     * @param bool $resolving
+     *
+     * @return \Nitsnets\MultiselectField\Multiselect
+     * @throws \Exception
+     */
+    public function api($path, $resourceClass, $resolving = true)
     {
         if (empty($resourceClass)) throw new Exception('Multiselect requires resourceClass, none provided.');
         if (empty($path)) throw new Exception('Multiselect requires apiUrl, none provided.');
 
-        $this->resolveUsing(function ($value) use ($resourceClass) {
-            $this->options([]);
-            $value = array_values((array)$value);
+        if ($resolving) {
+            $this->resolveUsing(function ($value) use ($resourceClass) {
+                $this->options([]);
+                $value = array_values((array)$value);
+                if (empty($value)) {
+                    return $value;
+                }
 
-            if (empty($value)) return $value;
+                // Handle translatable/collection where values are an array of arrays
+                if (is_array($value) && is_array($value[0] ?? null)) {
+                    $value = collect($value)->flatten(1)->toArray();
+                }
 
-            // Handle translatable/collection where values are an array of arrays
-            if (is_array($value) && is_array($value[0] ?? null)) {
-                $value = collect($value)->flatten(1)->toArray();
-            }
 
-            try {
-                $modelObj = $resourceClass::newModel();
-                $models = $modelObj::whereIn($modelObj->getKeyName(), $value)->get();
+                try {
+                    $modelObj = $resourceClass::newModel();
+                    $models = $modelObj::whereIn($modelObj->getKeyName(), $value)->get();
 
-                $this->setOptionsFromModels($models, $resourceClass);
-            } catch (Exception $e) {
-            }
+                    $this->setOptionsFromModels($models, $resourceClass);
+                } catch (Exception $e) {
+                    \Log::error($e->getMessage());
+                }
 
-            return $value;
-        });
+                return $value;
+            });
+        }
 
         return $this->withMeta(['apiUrl' => $path, 'labelKey' => $resourceClass::$title]);
     }
 
-    public function asyncResource($resourceClass)
+    /**
+     * @param      $resourceClass
+     * @param bool $resolving
+     *
+     * @return \Nitsnets\MultiselectField\Multiselect
+     * @throws \Exception
+     */
+    public function asyncResource($resourceClass, $resolving = true)
     {
         $apiUrl = "/nova-api/{$resourceClass::uriKey()}";
-        return $this->api($apiUrl, $resourceClass);
+        return $this->api($apiUrl, $resourceClass, $resolving);
     }
 
     protected function resolveAttribute($resource, $attribute)
     {
         $singleSelect = $this->meta['singleSelect'] ?? false;
         $value = data_get($resource, str_replace('->', '.', $attribute));
-        $saveAsJson = $this->shouldSaveAsJson($resource, $attribute);
 
         if ($value instanceof Collection) return $value;
-        if ($saveAsJson || $singleSelect) return $value;
+        if ($this->saveAsJSON || $singleSelect) return $value;
         return is_array($value) || is_object($value) ? (array) $value : json_decode($value);
     }
 
     protected function fillAttributeFromRequest(NovaRequest $request, $requestAttribute, $model, $attribute)
     {
         $singleSelect = $this->meta['singleSelect'] ?? false;
-        $value = $request->input($requestAttribute) ?: null;
-        $saveAsJson = $this->shouldSaveAsJson($model, $attribute);
+        $value = $request->input($requestAttribute) ?? null;
 
         if ($singleSelect) {
             $model->{$attribute} = $value;
         } else {
             $value = is_null($value) ? ($this->nullable ? $value : $value = []) : $value;
-            $model->{$attribute} = ($saveAsJson || is_null($value)) ? $value : json_encode($value);
+            $model->{$attribute} = ($this->saveAsJSON || is_null($value)) ? $value : json_encode($value);
         }
-    }
-
-    private function shouldSaveAsJson($model, $attribute)
-    {
-        if (!empty($model) && !is_array($model) && method_exists($model, 'getCasts')) {
-            $casts = $model->getCasts();
-            $isCastedToArray = ($casts[$attribute] ?? null) === 'array';
-            return $this->saveAsJSON || $isCastedToArray;
-        }
-        return false;
     }
 
     /**
      * Allows the field to save an actual JSON array to a SQL JSON column.
      *
      * @param bool $saveAsJSON
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function saveAsJSON($saveAsJSON = true)
     {
@@ -143,7 +165,7 @@ class Multiselect extends Field implements RelatableField
      * Sets the max number of options the user can select.
      *
      * @param int $max
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function max($max)
     {
@@ -154,7 +176,7 @@ class Multiselect extends Field implements RelatableField
      * Sets the placeholder value displayed on the field.
      *
      * @param string $placeholder
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function placeholder($placeholder)
     {
@@ -165,7 +187,7 @@ class Multiselect extends Field implements RelatableField
      * Sets the maximum number of options displayed at once.
      *
      * @param int $optionsLimit
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function optionsLimit($optionsLimit)
     {
@@ -176,7 +198,7 @@ class Multiselect extends Field implements RelatableField
      * Enables or disables reordering of the field values.
      *
      * @param bool $reorderable
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function reorderable($reorderable = true)
     {
@@ -189,16 +211,11 @@ class Multiselect extends Field implements RelatableField
      * This forces the value saved to be a single value and not an array.
      *
      * @param bool $singleSelect
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function singleSelect($singleSelect = true)
     {
         return $this->withMeta(['singleSelect' => $singleSelect]);
-    }
-
-    public function taggable($taggable = true)
-    {
-        return $this->withMeta(['taggable' => $taggable]);
     }
 
     /**
@@ -206,7 +223,7 @@ class Multiselect extends Field implements RelatableField
      * user to select the whole group at once.
      *
      * @param bool $groupSelect
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function groupSelect($groupSelect = true)
     {
@@ -217,58 +234,42 @@ class Multiselect extends Field implements RelatableField
      * Enable other-field dependency.
      *
      * @param string $otherFieldName
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
-    public function optionsDependOn($otherFieldName, $options)
+    public function dependsOn($otherFieldName)
     {
-        return $this->withMeta([
-            'optionsDependOn' => $otherFieldName,
-            'optionsDependOnOptions' => $options,
-        ]);
+        return $this->withMeta(['dependsOn' => $otherFieldName]);
     }
 
     /**
-     * Enable other-field dependency that is not inside the same Flexible content.
+     * Set dependency options map as a keyed array of options.
      *
-     * @param string $otherFieldName
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @param array $options
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
-    public function optionsDependOnOutsideFlexible($otherFieldName, $options)
+    public function dependsOnOptions(array $options)
     {
-        return $this->withMeta([
-            'optionsDependOn' => $otherFieldName,
-            'optionsDependOnOptions' => $options,
-            'optionsDependOnOutsideFlexible' => true,
-        ]);
+        $this->withMeta(['dependsOnOptions' => $options]);
+        return $this;
     }
 
     /**
      * Set max selectable value count as a keyed array of numbers.
      *
      * @param array $maxOptions
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
-    public function optionsDependOnMax(array $maxOptions)
+    public function dependsOnMax(array $maxOptions)
     {
-        return $this->withMeta(['optionsDependOnMax' => $maxOptions]);
-    }
-
-    /**
-     * Sets the limit value for the field.
-     *
-     * @param string $limit
-     * @return \Outl1ne\MultiselectField\Multiselect
-     **/
-    public function limit($limit)
-    {
-        return $this->withMeta(['limit' => $limit]);
+        $this->withMeta(['dependsOnMax' => $maxOptions]);
+        return $this;
     }
 
     /**
      * Sets group name for selects that need to have their values distinct.
      *
      * @param string $group
-     * @return \Outl1ne\MultiselectField\Multiselect
+     * @return \Nitsnets\MultiselectField\Multiselect
      **/
     public function distinct($group = "")
     {
@@ -276,6 +277,12 @@ class Multiselect extends Field implements RelatableField
         return $this->withMeta(['distinct' => $group]);
     }
 
+    /**
+     * @param $value
+     * @param $templateModel
+     *
+     * @return false|mixed|null
+     */
     public function resolveResponseValue($value, $templateModel)
     {
         $parsedValue = isset($value) ? ($this->saveAsJSON ? $value : json_decode($value)) : null;
@@ -284,12 +291,108 @@ class Multiselect extends Field implements RelatableField
             : $parsedValue;
     }
 
+    /**
+     * @param callable $resolveCallback
+     *
+     * @return \Nitsnets\MultiselectField\Multiselect
+     */
     public function resolveForPageResponseUsing(callable $resolveCallback)
     {
         $this->pageResponseResolveCallback = $resolveCallback;
         return $this;
     }
 
+
+    /**
+     * Makes the field to manage a BelongsToMany relationship.
+     *
+     * @param string $resourceClass The Nova Resource class for the other model.
+     * @return \Nitsnets\MultiselectField\Multiselect
+     **/
+    public function belongsToMany($resourceClass, $async = true)
+    {
+        $this->resolveUsing(function ($value) use ($async, $resourceClass) {
+            if ($async) $this->asyncResource($resourceClass);
+
+            $models = $async ? $value : $resourceClass::newModel()::all();
+
+            $this->setOptionsFromModels($models, $resourceClass);
+
+            return $value->map(function ($model) {
+                return $model[$model->getKeyName()];
+            })->toArray();
+        });
+
+        $this->fillUsing(function ($request, $model, $requestAttribute, $attribute) {
+            $model::saved(function ($model) use ($attribute, $request) {
+                // Validate
+                if (!method_exists($model, $attribute)) {
+                    throw new RuntimeException("{$model}::{$attribute} must be a relation method.");
+                }
+
+                $relation = $model->{$attribute}();
+
+                if (!method_exists($relation, 'sync')) {
+                    throw new RuntimeException("{$model}::{$attribute} does not appear to model a BelongsToMany or MorphsToMany.");
+                }
+
+                // Sync
+                $relation->sync($request->get($attribute) ?? []);
+            });
+        });
+
+        return $this;
+    }
+
+    /**
+     * Makes the field to manage a BelongsTo relationship.
+     *
+     * @param string $resourceClass The Nova Resource class for the other model.
+     * @return \Nitsnets\MultiselectField\Multiselect
+     **/
+    public function belongsTo($resourceClass, $async = true)
+    {
+        $this->singleSelect();
+        $primaryKey =  $resourceClass::newModel()->getKeyName();
+
+        $this->resolveUsing(function ($value) use ($async, $primaryKey, $resourceClass) {
+            if ($async) $this->asyncResource($resourceClass);
+
+            $value = $value->{$primaryKey} ?? null;
+            $model = $resourceClass::newModel();
+            $models = $async && isset($value) ? collect([$model::find($value)]) : $model::all();
+
+            $this->setOptionsFromModels($models, $resourceClass);
+
+            return $value;
+        });
+
+        $this->fillUsing(function ($request, $model, $requestAttribute, $attribute) use ($resourceClass) {
+            $modelClass = get_class($model);
+
+            // Validate
+            if (!method_exists($model, $attribute)) {
+                throw new RuntimeException("{$modelClass}::{$attribute} must be a relation method.");
+            }
+
+            $relation = $model->{$attribute}();
+
+            if (!method_exists($relation, 'associate')) {
+                throw new RuntimeException("{$modelClass}::{$attribute} does not appear to model a BelongsTo relationship.");
+            }
+
+            // Sync
+            $relation->associate($resourceClass::newModel()::find($request->get($attribute)));
+        });
+
+        return $this;
+    }
+
+    /**
+     * @param bool $clearOnSelect
+     *
+     * @return \Nitsnets\MultiselectField\Multiselect
+     */
     public function clearOnSelect($clearOnSelect = true)
     {
         return $this->withMeta(['clearOnSelect' => $clearOnSelect]);
@@ -298,7 +401,7 @@ class Multiselect extends Field implements RelatableField
     /**
      * Set the options from a collection of models.
      *
-     * @param  \Illuminate\Support\Collection  $models
+     * @param  \Illuminate\Database\Eloquent\Collection  $models
      * @param  string  $resourceClass
      * @return void
      */
@@ -311,45 +414,17 @@ class Multiselect extends Field implements RelatableField
     }
 
     /**
-     * Sets delimiter for joining values on index
-     *
-     * @param  string $delimiter
-     * @return \Outl1ne\MultiselectField\Multiselect
-     */
-    public function indexDelimiter(string $delimiter)
+     * @return \Nitsnets\MultiselectField\Multiselect
+     **/
+    public function showListed()
     {
-        return $this->withMeta(['indexDelimiter' => $delimiter]);
+        $this->withMeta(['listed' => true]);
+        return $this;
     }
 
-    /**
-     * Sets amount of characters that can be shown on index at once
-     *
-     * @param  int $limit
-     * @return \Outl1ne\MultiselectField\Multiselect
-     */
-    public function indexCharDisplayLimit(int $limit)
+    public function __construct($name, $attribute = null, callable $resolveCallback = null)
     {
-        return $this->withMeta(['indexCharDisplayLimit' => $limit]);
-    }
-
-    /**
-     * Sets amount of values that can be shown on index at once
-     *
-     * @param  int $limit
-     * @return \Outl1ne\MultiselectField\Multiselect
-     */
-    public function indexValueDisplayLimit(int $limit)
-    {
-        return $this->withMeta(['indexValueDisplayLimit' => $limit]);
-    }
-
-    /**
-     * Display the field as raw HTML using Vue.
-     *
-     * @return $this
-     */
-    public function asHtml()
-    {
-        return $this->withMeta(['asHtml' => true]);
+        parent::__construct($name, $attribute, $resolveCallback);
+        $this->withMeta(['listed' => false, 'reorderable' => false, 'activeImport' => false]);
     }
 }
